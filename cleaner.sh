@@ -1033,7 +1033,26 @@ review_and_batch_delete() {
     local app_indices="$1"
     local orp_indices="$2"
 
-    print_section "batch delete"
+    # build title from scan globals — no extra work needed
+    local joined="" n_apps=0
+    for idx in $app_indices; do
+        [[ $n_apps -gt 0 ]] && joined="$joined  |  "
+        joined="$joined${SCAN_APP_NAMES[$idx]}"
+        ((n_apps++))
+    done
+    local n_orps=0
+    for idx in $orp_indices; do ((n_orps++)); done
+
+    local title
+    if [[ $n_apps -gt 0 && $n_orps -gt 0 ]]; then
+        title="${n_apps} app$([ $n_apps -gt 1 ] && echo s) + ${n_orps} leftover$([ $n_orps -gt 1 ] && echo s) will move to Trash: $joined"
+    elif [[ $n_apps -gt 0 ]]; then
+        title="${n_apps} app$([ $n_apps -gt 1 ] && echo s) will move to Trash: $joined"
+    else
+        title="leftover junk will move to Trash"
+    fi
+
+    print_section "$title"
 
     local all_trash=()
     local skipped_running=()
@@ -1041,8 +1060,7 @@ review_and_batch_delete() {
     # --- apps ---
     for idx in $app_indices; do
         local app_path="${SCAN_APPS[$idx]}"
-        local app_name
-        app_name=$(get_app_name "$app_path")
+        local app_name="${SCAN_APP_NAMES[$idx]}"
 
         if pgrep -f "$app_path/Contents/MacOS/" >/dev/null 2>&1; then
             skipped_running+=("$app_name")
