@@ -11,7 +11,10 @@ SPINNER_PID=""
 MENU_ITEMS=()
 MENU_HEADERS=()
 MENU_SUBTITLE=""
-MENU_COMPACT=0  # 1 = skip logo, show one-line header only
+MENU_COMPACT=0   # 1 = skip logo, show one-line header only
+MENU_MULTI=0     # 1 = space toggles checkboxes; Enter with ≥1 checked → MENU_RESULT=-2
+MENU_SELECTABLE=() # parallel to MENU_ITEMS: 1 = item can be checked, 0 = cannot
+MENU_CHECKED=()    # parallel to MENU_ITEMS: 1 = checked
 
 SEARCH_PATHS=(
     "$HOME/Library/Application Support"
@@ -129,6 +132,14 @@ draw_menu() {
     local selected=0
     local viewport_offset=0  # first item index visible in viewport
 
+    # init checked state
+    local checked=()
+    local i=0
+    while [[ $i -lt $count ]]; do
+        checked+=("${MENU_CHECKED[$i]:-0}")
+        ((i++))
+    done
+
     _ITEM_ROW=()
     _build_item_rows
 
@@ -171,6 +182,14 @@ draw_menu() {
             viewport_offset=$sel_display_row
         fi
 
+        # count checked items
+        local n_checked=0
+        local j=0
+        while [[ $j -lt $count ]]; do
+            [[ "${checked[$j]}" == "1" ]] && ((n_checked++))
+            ((j++))
+        done
+
         # Render
         tput cup 0 0 2>/dev/null
         tput ed 2>/dev/null
@@ -202,32 +221,59 @@ draw_menu() {
                 fi
             fi
             if [[ $item_row -ge $viewport_offset && $item_row -lt $((viewport_offset + list_rows)) ]]; then
+                local selectable="${MENU_SELECTABLE[$i]:-0}"
+                local chk_prefix=""
+                if [[ $MENU_MULTI -eq 1 && "$selectable" == "1" ]]; then
+                    [[ "${checked[$i]}" == "1" ]] && chk_prefix="\033[0;32m[x]\033[0m " || chk_prefix="\033[2m[ ]\033[0m "
+                fi
                 if [[ $i -eq $selected ]]; then
-                    printf "  \033[0;36m▶\033[0m \033[1;37m%s\033[0m\n" "${MENU_ITEMS[$i]}"
+                    printf "  \033[0;36m▶\033[0m ${chk_prefix}\033[1;37m%s\033[0m\n" "${MENU_ITEMS[$i]}"
                 else
-                    printf "    \033[0;37m%s\033[0m\n" "${MENU_ITEMS[$i]}"
+                    printf "    ${chk_prefix}\033[0;37m%s\033[0m\n" "${MENU_ITEMS[$i]}"
                 fi
                 rendered=$((rendered + 1))
             fi
             ((i++))
         done
 
-        # Scroll indicator if list is taller than viewport
+        # Hint line
         if [[ $_TOTAL_LIST_ROWS -gt $list_rows ]]; then
             local pct=$(( (viewport_offset * 100) / (_TOTAL_LIST_ROWS - list_rows + 1) ))
-            printf "\n  \033[2m↑↓  Enter  q back    %d%%\033[0m\n" "$pct"
+            if [[ $MENU_MULTI -eq 1 && $n_checked -gt 0 ]]; then
+                printf "\n  \033[2m↑↓  Space toggle  Enter trash %d selected  q back    %d%%\033[0m\n" "$n_checked" "$pct"
+            elif [[ $MENU_MULTI -eq 1 ]]; then
+                printf "\n  \033[2m↑↓  Space select  Enter open  q back    %d%%\033[0m\n" "$pct"
+            else
+                printf "\n  \033[2m↑↓  Enter  q back    %d%%\033[0m\n" "$pct"
+            fi
         else
-            printf "\n  \033[2m↑↓  Enter  q back\033[0m\n"
+            if [[ $MENU_MULTI -eq 1 && $n_checked -gt 0 ]]; then
+                printf "\n  \033[2m↑↓  Space toggle  Enter trash %d selected  q back\033[0m\n" "$n_checked"
+            elif [[ $MENU_MULTI -eq 1 ]]; then
+                printf "\n  \033[2m↑↓  Space select  Enter open  q back\033[0m\n"
+            else
+                printf "\n  \033[2m↑↓  Enter  q back\033[0m\n"
+            fi
         fi
 
         read_key
         case "$KEY" in
             UP)   [[ $selected -gt 0 ]] && ((selected--)) ;;
             DOWN) [[ $selected -lt $((count-1)) ]] && ((selected++)) ;;
+            " ")
+                if [[ $MENU_MULTI -eq 1 && "${MENU_SELECTABLE[$selected]:-0}" == "1" ]]; then
+                    [[ "${checked[$selected]}" == "1" ]] && checked[$selected]=0 || checked[$selected]=1
+                fi
+                ;;
             ENTER)
                 tput cnorm 2>/dev/null
                 tput rmcup 2>/dev/null
-                MENU_RESULT=$selected
+                if [[ $MENU_MULTI -eq 1 && $n_checked -gt 0 ]]; then
+                    MENU_CHECKED=("${checked[@]}")
+                    MENU_RESULT=-2
+                else
+                    MENU_RESULT=$selected
+                fi
                 return 0
                 ;;
             q|Q|ESC)
@@ -671,8 +717,11 @@ browse_results() {
         local total_found=$((total_apps + total_orps + total_junk))
         MENU_SUBTITLE="found ${total_found}  ·  ${total_apps} installed  ·  $((total_orps + total_junk)) leftover"
         MENU_COMPACT=1
+        MENU_MULTI=1
         MENU_ITEMS=()
         MENU_HEADERS=()
+        MENU_SELECTABLE=()
+        MENU_CHECKED=()
         item_types=()
         item_idx=()
 
@@ -681,6 +730,7 @@ browse_results() {
             while [[ $i -lt $total_apps ]]; do
                 MENU_ITEMS+=("$(_pad "${SCAN_APP_NAMES[$i]}" 40)  $(printf '\033[0;36m%6s\033[0m' "${SCAN_APP_SIZES[$i]}")")
                 [[ $first_app -eq 1 ]] && MENU_HEADERS+=("installed apps") || MENU_HEADERS+=("")
+                MENU_SELECTABLE+=(1); MENU_CHECKED+=(0)
                 first_app=0; item_types+=("app"); item_idx+=("$i"); ((i++))
             done
         fi
@@ -692,6 +742,7 @@ browse_results() {
                 [[ ${SCAN_ORP_COUNTS[$i]} -eq 1 ]] && files_str="1 file"
                 MENU_ITEMS+=("$(_pad "${SCAN_ORP_LABELS[$i]}" 40)  $(printf '\033[0;36m%6s\033[0m  \033[2m%s\033[0m' "${SCAN_ORP_SIZES[$i]}" "$files_str")")
                 [[ $first_orp -eq 1 ]] && MENU_HEADERS+=("leftover junk") || MENU_HEADERS+=("")
+                MENU_SELECTABLE+=(1); MENU_CHECKED+=(0)
                 first_orp=0; item_types+=("orp"); item_idx+=("$i"); ((i++))
             done
         fi
@@ -701,10 +752,12 @@ browse_results() {
             while [[ $i -lt $total_junk ]]; do
                 MENU_ITEMS+=("$(_pad "${SCAN_JUNK_LABELS[$i]}" 40)  $(printf '\033[2m%6s\033[0m' "${SCAN_JUNK_SIZES[$i]}")")
                 [[ $first_junk -eq 1 ]] && MENU_HEADERS+=("junk") || MENU_HEADERS+=("")
+                MENU_SELECTABLE+=(0); MENU_CHECKED+=(0)
                 first_junk=0; item_types+=("junk"); item_idx+=("$i"); ((i++))
             done
             MENU_ITEMS+=("$(printf '\033[1;33m%-40s\033[0m' "trash all junk")")
             MENU_HEADERS+=("")
+            MENU_SELECTABLE+=(0); MENU_CHECKED+=(0)
             item_types+=("junk_all"); item_idx+=("0")
         fi
     }
@@ -718,18 +771,35 @@ browse_results() {
         local result=$MENU_RESULT
         [[ $result -eq -1 ]] && return
 
-        local sel_type="${item_types[$result]}"
-        local sel_idx="${item_idx[$result]}"
-
         local deleted=0
-        if [[ "$sel_type" == "app" ]]; then
-            review_and_uninstall "${SCAN_APPS[$sel_idx]}" && deleted=1
-        elif [[ "$sel_type" == "orp" ]]; then
-            review_and_trash_orphan "$sel_idx" && deleted=1
-        elif [[ "$sel_type" == "junk" ]]; then
-            review_and_trash_junk "$sel_idx" && deleted=1
-        elif [[ "$sel_type" == "junk_all" ]]; then
-            review_and_trash_all_junk && deleted=1
+
+        if [[ $result -eq -2 ]]; then
+            # batch: collect checked app and orp indices
+            local batch_apps="" batch_orps=""
+            local k=0
+            while [[ $k -lt ${#MENU_CHECKED[@]} ]]; do
+                if [[ "${MENU_CHECKED[$k]}" == "1" ]]; then
+                    local t="${item_types[$k]}"
+                    local x="${item_idx[$k]}"
+                    [[ "$t" == "app" ]] && batch_apps="$batch_apps $x"
+                    [[ "$t" == "orp" ]] && batch_orps="$batch_orps $x"
+                fi
+                ((k++))
+            done
+            review_and_batch_delete "$batch_apps" "$batch_orps" && deleted=1
+        else
+            local sel_type="${item_types[$result]}"
+            local sel_idx="${item_idx[$result]}"
+
+            if [[ "$sel_type" == "app" ]]; then
+                review_and_uninstall "${SCAN_APPS[$sel_idx]}" && deleted=1
+            elif [[ "$sel_type" == "orp" ]]; then
+                review_and_trash_orphan "$sel_idx" && deleted=1
+            elif [[ "$sel_type" == "junk" ]]; then
+                review_and_trash_junk "$sel_idx" && deleted=1
+            elif [[ "$sel_type" == "junk_all" ]]; then
+                review_and_trash_all_junk && deleted=1
+            fi
         fi
 
         if [[ $deleted -eq 1 ]]; then
@@ -952,6 +1022,99 @@ review_and_trash_all_junk() {
 
 _total_size() {
     du -sch "$@" 2>/dev/null | tail -1 | cut -f1
+}
+
+# ---------------------------------------------------------------------------
+# SCREEN 3e — Batch uninstall: apps + orphans selected via multi-select
+#   app_indices  - space-separated indices into SCAN_APPS
+#   orp_indices  - space-separated indices into SCAN_ORP_*
+# ---------------------------------------------------------------------------
+review_and_batch_delete() {
+    local app_indices="$1"
+    local orp_indices="$2"
+
+    print_section "batch delete"
+
+    local all_trash=()
+    local skipped_running=()
+
+    # --- apps ---
+    for idx in $app_indices; do
+        local app_path="${SCAN_APPS[$idx]}"
+        local app_name
+        app_name=$(get_app_name "$app_path")
+
+        if pgrep -f "$app_path/Contents/MacOS/" >/dev/null 2>&1; then
+            skipped_running+=("$app_name")
+            continue
+        fi
+
+        local app_size
+        app_size=$(du -sh "$app_path" 2>/dev/null | cut -f1)
+        printf "  \033[0;31m✗\033[0m  %-50s  \033[0;36m%s\033[0m  \033[1;33mapp\033[0m\n" "$app_path" "$app_size"
+        all_trash+=("$app_path")
+
+        start_spinner "searching leftovers for $app_name..."
+        local leftovers=()
+        while IFS= read -r l; do [[ -n "$l" ]] && leftovers+=("$l"); done < <(find_leftovers "$app_path")
+        stop_spinner
+
+        for lf in "${leftovers[@]}"; do
+            local sz; sz=$(du -sh "$lf" 2>/dev/null | cut -f1)
+            printf "  \033[0;31m✗\033[0m  %-50s  \033[0;36m%s\033[0m  \033[2mleftover\033[0m\n" "$lf" "$sz"
+            all_trash+=("$lf")
+        done
+    done
+
+    # --- orphans ---
+    for idx in $orp_indices; do
+        local path_list="${SCAN_ORP_PATHS[$idx]}"
+        local IFS_bak="$IFS"
+        IFS='|'; local parts; read -ra parts <<< "$path_list"; IFS="$IFS_bak"
+        for item in "${parts[@]}"; do
+            local sz; sz=$(du -sh "$item" 2>/dev/null | cut -f1)
+            printf "  \033[0;31m✗\033[0m  %-50s  \033[0;36m%s\033[0m  \033[2mleftover\033[0m\n" "$item" "$sz"
+            all_trash+=("$item")
+        done
+    done
+
+    # warn about skipped running apps
+    for name in "${skipped_running[@]}"; do
+        printf "  \033[1;33m⚠\033[0m  \033[1m%s is running\033[0m — skipped\n" "$name"
+    done
+
+    if [[ ${#all_trash[@]} -eq 0 ]]; then
+        echo ""
+        printf "  \033[1;33mnothing to delete\033[0m  (all selected apps are running)\n\n"
+        printf "  \033[2m[any key] back\033[0m "
+        read_key ""
+        return 1
+    fi
+
+    local total_sz
+    total_sz=$(_total_size "${all_trash[@]}")
+    echo ""
+    printf "  \033[1m%d item(s) → Trash\033[0m  \033[0;36m%s\033[0m  \033[2m(restore via Trash.app)\033[0m\n" "${#all_trash[@]}" "$total_sz"
+    echo ""
+    printf "  move all to trash? \033[0;36m[y/N]\033[0m "
+    read_key "yYnN"
+    local confirm="$KEY"
+    echo "$confirm"
+
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        echo ""
+        for item in "${all_trash[@]}"; do _do_trash "$item"; done
+        echo ""
+        printf "  \033[0;32mdone.\033[0m  \033[2mopen Trash to restore if needed\033[0m\n\n"
+        printf "  \033[2m[enter] continue\033[0m "
+        read -r
+        return 0
+    else
+        echo ""
+        printf "  \033[2mcancelled.\033[0m\n"
+        sleep 1
+        return 1
+    fi
 }
 
 _do_trash() {
