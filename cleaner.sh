@@ -571,6 +571,28 @@ find_orphans() {
         done < <(find "$scan_path" -maxdepth 1 -mindepth 1 2>/dev/null)
     done
 
+    # /opt/* directories — dev environments (anaconda, R, etc.) excluding homebrew itself
+    if [[ -d /opt ]]; then
+        while IFS= read -r entry; do
+            local label
+            label=$(basename "$entry")
+            [[ "$label" == "homebrew" ]] && continue
+            echo "$label	$entry" >> "$groups_file"
+        done < <(find /opt -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    fi
+
+    # /opt/homebrew/var/* — data dirs for db services (mysql, redis, etc.)
+    # only include if the corresponding formula is NOT currently installed
+    if [[ -d /opt/homebrew/var ]]; then
+        while IFS= read -r entry; do
+            local label
+            label=$(basename "$entry")
+            [[ "$label" == "homebrew" || "$label" == "log" ]] && continue
+            brew list "$label" >/dev/null 2>&1 && continue
+            echo "$label	$entry" >> "$groups_file"
+        done < <(find /opt/homebrew/var -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    fi
+
     rm -f "$index_file" "$substr_file"
 
     [[ ! -s "$groups_file" ]] && rm -f "$groups_file" && return
@@ -1145,7 +1167,120 @@ _do_trash() {
 }
 
 # ---------------------------------------------------------------------------
-# SCREEN 4 — Help / shell install helper
+# SCREEN 4 — Brew & pip package inspector (read-only)
+#   Shows brew leaves + pip3 packages with sizes and removal commands.
+# ---------------------------------------------------------------------------
+show_brew_packages() {
+    print_header
+    printf "  \033[2mread-only — run the commands below to uninstall\033[0m\n"
+    echo ""
+
+    local found_anything=0
+
+    # brew formulae (leaves = top-level, no dependents)
+    if command -v brew >/dev/null 2>&1; then
+        local leaves=()
+        while IFS= read -r pkg; do
+            [[ -n "$pkg" ]] && leaves+=("$pkg")
+        done < <(brew leaves 2>/dev/null)
+
+        if [[ ${#leaves[@]} -gt 0 ]]; then
+            found_anything=1
+            printf "  \033[0;36m─── brew formulae (%d) ──────────────────────────────────\033[0m\n" "${#leaves[@]}"
+            printf "  \033[2muninstall: brew uninstall <name>\033[0m\n\n"
+            for pkg in "${leaves[@]}"; do
+                local cellar="/opt/homebrew/Cellar/$pkg"
+                local vardir="/opt/homebrew/var/$pkg"
+                local sz="?"
+                if [[ -d "$cellar" && -d "$vardir" ]]; then
+                    sz=$(du -sch "$cellar" "$vardir" 2>/dev/null | tail -1 | cut -f1)
+                elif [[ -d "$cellar" ]]; then
+                    sz=$(du -sh "$cellar" 2>/dev/null | cut -f1)
+                fi
+                printf "  \033[0;37m%-40s\033[0m  \033[0;36m%6s\033[0m\n" "$pkg" "$sz"
+            done
+            echo ""
+        fi
+
+        local casks=()
+        while IFS= read -r pkg; do
+            [[ -n "$pkg" ]] && casks+=("$pkg")
+        done < <(brew list --cask 2>/dev/null)
+
+        if [[ ${#casks[@]} -gt 0 ]]; then
+            found_anything=1
+            printf "  \033[0;36m─── brew casks (%d) ─────────────────────────────────────\033[0m\n" "${#casks[@]}"
+            printf "  \033[2muninstall: brew uninstall --cask <name>\033[0m\n\n"
+            for pkg in "${casks[@]}"; do
+                local caskroom="/opt/homebrew/Caskroom/$pkg"
+                local sz="?"
+                if [[ -d "$caskroom" ]]; then
+                    # Caskroom contains symlinks to real install locations — resolve with du directly
+                    local total_sz=0
+                    while IFS= read -r lnk; do
+                        local target; target=$(readlink "$lnk")
+                        if [[ -e "$target" ]]; then
+                            local lsz; lsz=$(du -sk "$target" 2>/dev/null | cut -f1)
+                            total_sz=$((total_sz + ${lsz:-0}))
+                        fi
+                    done < <(find "$caskroom" -maxdepth 2 -type l 2>/dev/null)
+                    if [[ $total_sz -gt 0 ]]; then
+                        sz=$(echo "$total_sz" | awk '{
+                            if ($1 >= 1048576) printf "%.1fG", $1/1048576
+                            else if ($1 >= 1024) printf "%.1fM", $1/1024
+                            else printf "%dK", $1
+                        }')
+                    else
+                        sz=$(du -sh "$caskroom" 2>/dev/null | cut -f1)
+                    fi
+                fi
+                printf "  \033[0;37m%-40s\033[0m  \033[0;36m%6s\033[0m\n" "$pkg" "$sz"
+            done
+            echo ""
+        fi
+    fi
+
+    # pip packages
+    if command -v pip3 >/dev/null 2>&1; then
+        local pip_pkgs=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && pip_pkgs+=("$line")
+        done < <(pip3 list --not-required --format=columns 2>/dev/null | tail -n +3)
+
+        local site_packages
+        site_packages=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+
+        if [[ ${#pip_pkgs[@]} -gt 0 ]]; then
+            found_anything=1
+            printf "  \033[0;36m─── pip packages (%d) ───────────────────────────────────\033[0m\n" "${#pip_pkgs[@]}"
+            printf "  \033[2muninstall: pip3 uninstall <name>\033[0m\n\n"
+            for line in "${pip_pkgs[@]}"; do
+                local pkg_name
+                pkg_name=$(echo "$line" | awk '{print $1}')
+                local sz="?"
+                if [[ -n "$site_packages" ]]; then
+                    local pkg_lower
+                    pkg_lower=$(to_lower "$pkg_name" | tr '-' '_')
+                    local pkg_dir="$site_packages/$pkg_lower"
+                    [[ -d "$pkg_dir" ]] && sz=$(du -sh "$pkg_dir" 2>/dev/null | cut -f1)
+                fi
+                printf "  \033[0;37m%-40s\033[0m  \033[0;36m%6s\033[0m\n" "$pkg_name" "$sz"
+            done
+            echo ""
+        fi
+    fi
+
+    if [[ $found_anything -eq 0 ]]; then
+        printf "  \033[0;32mnothing found\033[0m\n\n"
+    fi
+
+    printf "  \033[0;36m─────────────────────────────────────────────────────────\033[0m\n"
+    printf "  \033[2m[any key] back\033[0m "
+    read_key ""
+}
+
+# ---------------------------------------------------------------------------
+# SCREEN 5 — Help / shell install helper
 #   Entry: show_main_menu → "help"
 #   Non-TUI screen (no draw_menu). Returns on any key.
 # ---------------------------------------------------------------------------
@@ -1187,15 +1322,17 @@ show_about() {
 # ---------------------------------------------------------------------------
 show_main_menu() {
     while true; do
-        MENU_ITEMS=("scan for apps" "help" "quit")
-        MENU_HEADERS=("" "" "")
+        MENU_ITEMS=("scan for apps" "check brew + pip packages" "help" "quit")
+        MENU_HEADERS=("" "" "" "")
         MENU_SUBTITLE=""
         MENU_COMPACT=0
+        MENU_MULTI=0
         draw_menu
         case $MENU_RESULT in
             0)  browse_results ;;
-            1)  show_about ;;
-            2|-1)
+            1)  show_brew_packages ;;
+            2)  show_about ;;
+            3|-1)
                 exit 0
                 ;;
         esac
