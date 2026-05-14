@@ -10,22 +10,19 @@ Free macOS app uninstaller in pure bash. Finds leftovers, moves to Trash (not `r
 
 ## Install in 5 seconds
 
+**via Homebrew:**
+```bash
+brew install rblyz/tap/cleaner
+```
+
+**via git:**
 ```bash
 git clone https://github.com/rblyz/mac-app-cleaner.git && cd mac-app-cleaner && chmod +x cleaner.sh && ./cleaner.sh
 ```
 
-## Or in 30 seconds
-
-```bash
-git clone https://github.com/rblyz/mac-app-cleaner.git
-cd mac-app-cleaner
-chmod +x cleaner.sh
-./cleaner.sh
-```
-
 The first run offers to add a `cleaner` shell alias so you can launch it from anywhere.
 
-No build, no Homebrew, no dependencies — works on stock macOS.
+No build, no dependencies — works on stock macOS.
 
 ## How to use
 
