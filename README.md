@@ -2,6 +2,8 @@
 
 Free macOS app uninstaller in pure bash. Finds leftovers, moves to Trash (not `rm`), zero dependencies. Safe. Open-source. Interactive.
 
+**Script moves to Trash, not `rm -rf`.** Any file is one click away from recovery in Trash.app.
+
 > Apple still ships no real uninstaller. Drag-to-Trash leaves caches, prefs, containers, launch agents, login items — gigabytes of forgotten state. This fixes that.
 
 ![Mac App Cleaner demo](docs/demo.gif)
